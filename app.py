@@ -3,29 +3,20 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 import plotly.graph_objects as go
-from sklearn.preprocessing import MinMaxScaler
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense, Dropout
+from sklearn.linear_model import LinearRegression
+from sklearn.ensemble import RandomForestRegressor
 
 # ==========================================
 # 1. АГЕНТ ДАННЫХ (Data Agent)
 # ==========================================
 class DataAgent:
-    def __init__(self):
-        self.raw_data = None
-    
     def generate_synthetic_data(self, days=500):
-        # Генерация правдоподобных данных городской инфраструктуры
         dates = pd.date_range(end=datetime.now(), periods=days)
-        
-        # Сезонность и тренд для трафика
         t = np.arange(days)
+        
+        # Сезонность и тренд
         traffic = 100 + 50 * np.sin(2 * np.pi * t / 365) + np.sin(2 * np.pi * t / 7) * 20 + np.random.normal(0, 5, days)
-        
-        # Потребление энергии (зависит от трафика)
         energy = traffic * 1.2 + np.random.normal(0, 15, days) + 20
-        
-        # Уровень загрязнения
         pollution = traffic * 0.05 + np.random.normal(0, 3, days)
         
         self.raw_data = pd.DataFrame({
@@ -47,53 +38,22 @@ class DataAgent:
 # 2. АГЕНТ ПРОГНОЗИРОВАНИЯ (Prediction Agent)
 # ==========================================
 class PredictionAgent:
-    def __init__(self):
-        self.model = None
-        self.scaler = MinMaxScaler()
-    
-    def build_lstm_model(self, input_shape):
-        model = Sequential([
-            LSTM(50, return_sequences=True, input_shape=input_shape),
-            Dropout(0.2),
-            LSTM(50, return_sequences=False),
-            Dropout(0.2),
-            Dense(25),
-            Dense(1)
-        ])
-        model.compile(optimizer='adam', loss='mean_squared_error')
-        return model
-    
     def train_and_predict(self, df, column='Трафик', forecast_days=30):
-        # Подготовка данных для нейросети
-        data = df[column].values.reshape(-1, 1)
-        scaled_data = self.scaler.fit_transform(data)
+        # Готовим данные для регрессии
+        df = df.copy()
+        df['Time'] = (df['Дата'] - df['Дата'].min()).dt.days
         
-        # Создание последовательностей
-        seq_length = 60
-        x_train, y_train = [], []
-        for i in range(seq_length, len(scaled_data)):
-            x_train.append(scaled_data[i-seq_length:i, 0])
-            y_train.append(scaled_data[i, 0])
+        X = df[['Time']].values
+        y = df[column].values
         
-        x_train, y_train = np.array(x_train), np.array(y_train)
-        x_train = np.reshape(x_train, (x_train.shape[0], x_train.shape[1], 1))
+        # Обучаем модель (случайный лес - быстрый и надежный)
+        model = RandomForestRegressor(n_estimators=100, random_state=42)
+        model.fit(X, y)
         
-        # Обучение модели
-        self.model = self.build_lstm_model((x_train.shape[1], 1))
-        self.model.fit(x_train, y_train, epochs=5, batch_size=32, verbose=0)
-        
-        # Прогнозирование на будущее
-        last_60_days = scaled_data[-seq_length:]
-        curr_seq = last_60_days.reshape(1, seq_length, 1)
-        
-        predictions = []
-        for _ in range(forecast_days):
-            pred = self.model.predict(curr_seq, verbose=0)[0][0]
-            predictions.append(pred)
-            curr_seq = np.append(curr_seq[:, 1:, :], [[[pred]]], axis=1)
-        
-        # Обратное масштабирование
-        predictions = self.scaler.inverse_transform(np.array(predictions).reshape(-1, 1))
+        # Прогноз на будущее
+        last_day = df['Time'].max()
+        future_days = np.arange(last_day + 1, last_day + forecast_days + 1).reshape(-1, 1)
+        predictions = model.predict(future_days)
         
         # Даты прогноза
         last_date = df['Дата'].iloc[-1]
@@ -101,26 +61,24 @@ class PredictionAgent:
         
         forecast_df = pd.DataFrame({
             'Дата': forecast_dates,
-            f'Прогноз_{column}': predictions.flatten()
+            f'Прогноз_{column}': predictions
         })
         
         return forecast_df
 
 # ==========================================
-# 3. АГЕНТ ВИЗУАЛИЗАЦИИ И ОТЧЕТОВ (Report Agent)
+# 3. АГЕНТ ВИЗУАЛИЗАЦИИ (Report Agent)
 # ==========================================
 class ReportAgent:
     def generate_plots(self, historical, forecast, metric):
         fig = go.Figure()
         
-        # Исторические данные
         fig.add_trace(go.Scatter(
             x=historical['Дата'], y=historical[metric],
             mode='lines', name='Исторические данные',
             line=dict(color='blue')
         ))
         
-        # Прогноз
         forecast_col = f'Прогноз_{metric}'
         fig.add_trace(go.Scatter(
             x=forecast['Дата'], y=forecast[forecast_col],
@@ -155,7 +113,7 @@ class ReportAgent:
 st.set_page_config(page_title="CityPredict AI", layout="wide")
 
 st.title("🏙️ Гибридная мультиагентная платформа")
-st.markdown("### Предиктивная аналитика городской инфраструктуры на базе ИИ")
+st.markdown("### Предиктивная аналитика городской инфраструктуры")
 
 # Инициализация агентов
 data_agent = DataAgent()
@@ -166,19 +124,11 @@ report_agent = ReportAgent()
 with st.sidebar:
     st.header("⚙️ Управление платформой")
     
-    # Выбор источника данных
     data_source = st.radio("Источник данных:", ["Синтетические данные (демо)", "Загрузить CSV файл"])
     
     uploaded_file = None
     if data_source == "Загрузить CSV файл":
         uploaded_file = st.file_uploader("Загрузите CSV", type=['csv'])
-        if uploaded_file is not None:
-            df = data_agent.load_real_data(uploaded_file)
-        else:
-            st.warning("Файл не загружен, использую синтетику")
-            df = data_agent.generate_synthetic_data()
-    else:
-        df = data_agent.generate_synthetic_data()
     
     # Выбор метрики
     metric = st.selectbox("Что прогнозируем?", ["Трафик", "Энергия", "Загрязнение"])
@@ -191,19 +141,24 @@ with st.sidebar:
 
 # Основной экран
 if run_button:
-    with st.spinner("🤖 Агенты собирают данные, обучают нейросеть и строят прогноз..."):
-        # 1. Агент данных работает
+    with st.spinner("🤖 Агенты собирают данные, обучают модель и строят прогноз..."):
+        # Получаем данные
+        if uploaded_file is not None:
+            df = data_agent.load_real_data(uploaded_file)
+        else:
+            df = data_agent.generate_synthetic_data()
+        
         st.subheader(f"📊 Данные по показателю: {metric}")
         st.dataframe(df.tail(10))
         
-        # 2. Агент прогнозирования обучает LSTM
+        # Прогнозирование
         forecast_df = prediction_agent.train_and_predict(df, column=metric, forecast_days=forecast_days)
         
-        # 3. Агент визуализации строит график
+        # Визуализация
         fig = report_agent.generate_plots(df, forecast_df, metric)
         st.plotly_chart(fig, use_container_width=True)
         
-        # 4. Агент рисков
+        # Анализ рисков
         risk, avg_hist, avg_forecast = report_agent.calculate_risks(df, forecast_df, metric)
         st.markdown(f"### Анализ рисков: {risk}")
         
